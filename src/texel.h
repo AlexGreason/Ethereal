@@ -23,26 +23,27 @@
 #include "types.h"
 
 #define CLEARING    (      0) // Clear hashes between runs
-#define RESOLVE     (      0) // Resolve with qsearch
+#define RESOLVE     (      1) // Resolve with qsearch
 #define NPARTITIONS (     64) // # of partitions to use
 
 #define NDEPTHS     (      0) // # of search iterations
-#define NTERMS      (      0) // # of terms to tune
-#define NPOSITIONS  (1491000) // # of FENs in book
+#define NTERMS      (      198) // # of terms to tune
+#define NPOSITIONS  ( 1482745) // # of FENs in book
+#define SAVEDATA    (      0) // whether or not to save the evaluations
 
 // Each Eval Term (Total = 490)
-#define TunePawnValue                   (0)
-#define TuneKnightValue                 (0)
-#define TuneBishopValue                 (0)
-#define TuneRookValue                   (0)
-#define TuneQueenValue                  (0)
-#define TuneKingValue                   (0)
-#define TunePawnPSQT32                  (0)
-#define TuneKnightPSQT32                (0)
-#define TuneBishopPSQT32                (0)
-#define TuneRookPSQT32                  (0)
-#define TuneQueenPSQT32                 (0)
-#define TuneKingPSQT32                  (0)
+#define TunePawnValue                   (1)
+#define TuneKnightValue                 (1)
+#define TuneBishopValue                 (1)
+#define TuneRookValue                   (1)
+#define TuneQueenValue                  (1)
+#define TuneKingValue                   (1)
+#define TunePawnPSQT32                  (1)
+#define TuneKnightPSQT32                (1)
+#define TuneBishopPSQT32                (1)
+#define TuneRookPSQT32                  (1)
+#define TuneQueenPSQT32                 (1)
+#define TuneKingPSQT32                  (1)
 #define TunePawnIsolated                (0)
 #define TunePawnStacked                 (0)
 #define TunePawnBackwards               (0)
@@ -85,6 +86,7 @@ struct TexelEntry {
     int ntuples;
     double result;
     double eval, phase;
+    double evalatdepth[NDEPTHS + 1];
     double factors[PHASE_NB];
     TexelTuple* tuples;
 };

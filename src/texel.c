@@ -89,9 +89,11 @@ void runTexelTuning(Thread *thread) {
 
     TexelEntry *tes;
     int i, j, iteration = -1;
-    double K, thisError, bestError = 1e6, baseRate = 10.0;
+    double K, thisError, bestError = 1e6, baseRate = 3.0;
     double params[NTERMS][PHASE_NB] = {{0}, {0}};
     double cparams[NTERMS][PHASE_NB] = {{0}, {0}};
+    double grad = 0;
+    double prevgrad = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -110,28 +112,32 @@ void runTexelTuning(Thread *thread) {
 
     printf("\n\nInitializing Texel Entries from FENS...");
     initTexelEntries(tes, thread);
-
+    //loadfromfile(tes, thread);
     printf("\n\nFetching Current Evaluation Terms as a Starting Point...");
     initCurrentParameters(cparams);
 
     printf("\n\nComputing Optimal K Value...\n");
     K = computeOptimalK(tes);
 
+    if (NTERMS == 0){
+      return;
+    }
+
     while (1) {
 
         iteration++;
 
-        if (iteration % 25 == 0) {
+        if (iteration % 100 == 0) {
 
             // Check for a regression in the tuning process
             thisError = completeLinearError(tes, params, K);
-            if (thisError >= bestError)
-                break;
+            //if (thisError >= bestError)
+                //baseRate *= 0.9;
 
             // Update our best and record the current parameters
             bestError = thisError;
             printParameters(params, cparams);
-            printf("\nIteration [%d] Error = %g \n", iteration, bestError);
+            printf("\nIteration [%d] Error = %g Rate = %g grad = %g\n", iteration, bestError, baseRate, grad);
         }
 
         double gradients[NTERMS][PHASE_NB] = {{0}, {0}};
@@ -168,20 +174,24 @@ void runTexelTuning(Thread *thread) {
         // Finally, perform the update step of SGD. If we were to properly compute the gradients
         // each term would be divided by -2 over NPOSITIONS. Instead we avoid those divisions until the
         // final update step. Note that we have also simplified the minus off of the 2.
+        prevgrad = grad;
+        grad = 0;
         for (i = 0; i < NTERMS; i++) {
             params[i][MG] += (2.0 / NPOSITIONS) * baseRate * gradients[i][MG];
+            grad += fabs((2.0 / NPOSITIONS) * gradients[i][MG]);
             params[i][EG] += (2.0 / NPOSITIONS) * baseRate * gradients[i][EG];
+            grad += fabs((2.0 / NPOSITIONS) * gradients[i][EG]);
         }
     }
 }
 
-void initTexelEntries(TexelEntry *tes, Thread *thread) {
-
+void loadfromfile(TexelEntry *tes, Thread *thread){
     int i, j, k;
     Undo undo[1];
     Limits limits;
     int coeffs[NTERMS];
-    char line[128];
+    char rline[1024];
+    char temp[50];
 
     // Initialize limits for the search
     limits.limitedByNone  = 1;
@@ -195,18 +205,20 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
     thread->limits = &limits;
     thread->depth  = 0;
 
-    FILE * fin = fopen("FENS", "r");
+    FILE * fin = fopen("FENS-Scored", "r");
 
     for (i = 0; i < NPOSITIONS; i++) {
 
         // Read next position from the FEN file
-        if (fgets(line, 128, fin) == NULL) {
+        if (fgets(rline, 1024, fin) == NULL) {
             printf("Unable to read line #%d\n", i);
             exit(EXIT_FAILURE);
         }
+        int len = strlen(rline);
+        char* line = strtok(rline, "|");
 
         // Occasional reporting for total completion
-        if ((i + 1) % 10000 == 0 || i == NPOSITIONS - 1)
+        if ((i + 1) % 10 == 0 || i == NPOSITIONS - 1)
             printf("\rInitializing Texel Entries from FENS...  [%7d of %7d]", i + 1, NPOSITIONS);
 
         // Determine the result of the game
@@ -237,9 +249,144 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
         tes[i].phase = (tes[i].phase * 256 + 12) / 24.0;
 
         // Use a iterative deepening to get a predictive evaluation
-        for (int depth = 0; depth <= NDEPTHS; depth++)
+        //printf("position %i\n", i);
+        for (int depth = 0; depth <= NDEPTHS; depth++){
+            tes[i].eval = (double) strtol(strtok(NULL, " "), NULL, 10);
+            if (thread->board.turn == BLACK) tes[i].eval *= -1;
+            tes[i].evalatdepth[depth] = tes[i].eval;
+        }
+        tes[i].eval = tes[i].evalatdepth[NDEPTHS];
+
+        // Resolve FEN to a quiet position
+        if (RESOLVE) {
+            qsearch(thread, &thread->pv, -MATE, MATE, 0);
+            for (j = 0; j < thread->pv.length; j++)
+                applyMove(&thread->board, thread->pv.line[j], undo);
+        }
+
+        // Vectorize the evaluation coefficients
+        T = EmptyTrace;
+        evaluateBoard(&thread->board, NULL);
+        initCoefficients(coeffs);
+
+        // Count up the non zero evaluation terms
+        for (k = 0, j = 0; j < NTERMS; j++)
+            k += coeffs[j] != 0;
+
+        // Determine if we need to allocate more Texel Tuples
+        if (k > TupleStackSize) {
+            printf("\n\nAllocating Memory for Texel Tuple Stack [%dKB]...\n\n",
+                    (int)(STACKSIZE * sizeof(TexelTuple) / 1024));
+            TupleStackSize = STACKSIZE;
+            TupleStack = calloc(STACKSIZE, sizeof(TexelTuple));
+        }
+
+        // Tell the Texel Entry where its Texel Tuples are
+        tes[i].tuples = TupleStack;
+        tes[i].ntuples = k;
+        TupleStack += k;
+        TupleStackSize -= k;
+
+        // Finally, initialize the Texel Tuples
+        for (k = 0, j = 0; j < NTERMS; j++) {
+            if (coeffs[j] != 0){
+                tes[i].tuples[k].index = j;
+                tes[i].tuples[k++].coeff = coeffs[j];
+            }
+        }
+    }
+
+    fclose(fin);
+}
+
+void initTexelEntries(TexelEntry *tes, Thread *thread) {
+
+    int i, j, k;
+    Undo undo[1];
+    Limits limits;
+    int coeffs[NTERMS];
+    char line[128];
+    char outline[1024];
+    char temp[64];
+    char dataline[65536];
+
+    // Initialize limits for the search
+    limits.limitedByNone  = 1;
+    limits.limitedByTime  = 0;
+    limits.limitedByDepth = 0;
+    limits.limitedBySelf  = 0;
+    limits.timeLimit      = 0;
+    limits.depthLimit     = 0;
+
+    // Initialize the thread for the search
+    thread->limits = &limits;
+    thread->depth  = 0;
+
+    FILE * fin = fopen("FENS-nomate", "r");
+
+    FILE * fout = fopen("FENS-Scored-3", "w");
+    FILE * dataout = fopen("Data-1", "w");
+
+    for (i = 0; i < NPOSITIONS; i++) {
+        memset(outline, '\0', sizeof(outline));
+
+        // Read next position from the FEN file
+        if (fgets(line, 128, fin) == NULL) {
+            printf("Unable to read line #%d\n", i);
+            exit(EXIT_FAILURE);
+        }
+        int len = strlen(line);
+        strncpy(outline, line, len - 2);
+        strcat(outline, " | ");
+
+        // Occasional reporting for total completion
+        if ((i + 1) % 10 == 0 || i == NPOSITIONS - 1)
+            printf("\rInitializing Texel Entries from FENS...  [%7d of %7d]", i + 1, NPOSITIONS);
+
+        // Determine the result of the game
+        if      (strstr(line, "1-0")) tes[i].result = 1.0;
+        else if (strstr(line, "0-1")) tes[i].result = 0.0;
+        else if (strstr(line, "1/2")) tes[i].result = 0.5;
+        else    {printf("Cannot Parse %s\n", line); exit(EXIT_FAILURE);}
+
+        // Clear out all of the hash and history tables. This is extemely slow!
+        // for correctness this must be done, but you can likely get away without
+        // doing it. For high depth this is less of an issue and should be cleared.
+        if (CLEARING) resetThreadPool(thread), clearTT();
+
+        // Setup the board with the FEN from the FENS file
+        boardFromFEN(&thread->board, line);
+
+        // Determine the game phase based on remaining material
+        tes[i].phase = 24 - 4 * popcount(thread->board.pieces[QUEEN ])
+                          - 2 * popcount(thread->board.pieces[ROOK  ])
+                          - 1 * popcount(thread->board.pieces[BISHOP])
+                          - 1 * popcount(thread->board.pieces[KNIGHT]);
+
+        // Compute phase factors for updating the gradients
+        tes[i].factors[MG] = 1 - tes[i].phase / 24.0;
+        tes[i].factors[EG] = 0 + tes[i].phase / 24.0;
+
+        // Finish the phase calculation for the evaluation
+        tes[i].phase = (tes[i].phase * 256 + 12) / 24.0;
+
+        // Use a iterative deepening to get a predictive evaluation
+        //printf("position %i\n", i);
+        for (int depth = 0; depth <= NDEPTHS; depth++){
             tes[i].eval = search(thread, &thread->pv, -MATE, MATE, depth, 0);
-        if (thread->board.turn == BLACK) tes[i].eval *= -1;
+            if (thread->board.turn == BLACK) tes[i].eval *= -1;
+            tes[i].evalatdepth[depth] = tes[i].eval;
+            sprintf(temp, "%d", (int) tes[i].eval);
+            strcat(outline, " ");
+            strcat(outline, temp);
+            //printf("Eval: %s\n", temp);
+        }
+        strcat(outline, "\n");
+        if (SAVEDATA){
+          fputs(outline, fout);
+        }
+
+
 
         // Resolve FEN to a quiet position
         if (RESOLVE) {
