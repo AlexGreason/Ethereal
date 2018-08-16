@@ -1,17 +1,14 @@
 /*
   Ethereal is a UCI chess playing engine authored by Andrew Grant.
   <https://github.com/AndyGrant/Ethereal>     <andrew@grantnet.us>
-
   Ethereal is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
   (at your option) any later version.
-
   Ethereal is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
   GNU General Public License for more details.
-
   You should have received a copy of the GNU General Public License
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
@@ -89,7 +86,7 @@ void runTexelTuning(Thread *thread) {
 
     TexelEntry *tes;
     int i, j, iteration = -1;
-    double K, thisError, bestError = 1e6, baseRate = 10.0;
+    double K, thisError, bestError = 1e6, baseRate = 3.0;
     double params[NTERMS][PHASE_NB] = {{0}, {0}};
     double cparams[NTERMS][PHASE_NB] = {{0}, {0}};
 
@@ -119,9 +116,10 @@ void runTexelTuning(Thread *thread) {
 
     while (1) {
 
+
         iteration++;
 
-        if (iteration % 25 == 0) {
+        if (iteration % 100 == 0) {
 
             // Check for a regression in the tuning process
             thisError = completeLinearError(tes, params, K);
@@ -132,6 +130,7 @@ void runTexelTuning(Thread *thread) {
             bestError = thisError;
             printParameters(params, cparams);
             printf("\nIteration [%d] Error = %g \n", iteration, bestError);
+            normalize(params);
         }
 
         double gradients[NTERMS][PHASE_NB] = {{0}, {0}};
@@ -175,9 +174,23 @@ void runTexelTuning(Thread *thread) {
     }
 }
 
+void normalize(double params[NTERMS][2]){
+    double sum = 0;
+    for(int i = 0; i < NTERMS; i++){
+      sum += params[i][MG];
+      sum += params[i][EG];
+    }
+    printf("sum: %f\n", sum);
+    sum /= NTERMS * 2;
+    for(int i = 0; i < NTERMS; i++){
+      params[i][MG] -= sum;
+      params[i][EG] -= sum;
+    }
+}
+
 void initTexelEntries(TexelEntry *tes, Thread *thread) {
 
-    int i, j, k;
+    int i, j, k, eval;
     Undo undo[1];
     Limits limits;
     int coeffs[NTERMS];
@@ -195,7 +208,7 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
     thread->limits = &limits;
     thread->depth  = 0;
 
-    FILE * fin = fopen("FENS", "r");
+    FILE * fin = fopen("FENS-c-filt-200-thresh-300", "r");
 
     for (i = 0; i < NPOSITIONS; i++) {
 
@@ -218,7 +231,7 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
         // Clear out all of the hash and history tables. This is extemely slow!
         // for correctness this must be done, but you can likely get away without
         // doing it. For high depth this is less of an issue and should be cleared.
-        if (CLEARING) resetThreadPool(thread), clearTT();
+        if (CLEARING && NDEPTHS) resetThreadPool(thread), clearTT();
 
         // Setup the board with the FEN from the FENS file
         boardFromFEN(&thread->board, line);
@@ -237,7 +250,7 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
         tes[i].phase = (tes[i].phase * 256 + 12) / 24.0;
 
         // Use a iterative deepening to get a predictive evaluation
-        for (int depth = 0; depth <= NDEPTHS; depth++)
+        for (int depth = 1; depth <= NDEPTHS; depth++)
             tes[i].eval = search(thread, &thread->pv, -MATE, MATE, depth, 0);
         if (thread->board.turn == BLACK) tes[i].eval *= -1;
 
@@ -250,8 +263,12 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
 
         // Vectorize the evaluation coefficients
         T = EmptyTrace;
-        evaluateBoard(&thread->board, NULL);
+        eval = evaluateBoard(&thread->board, NULL);
         initCoefficients(coeffs);
+
+        // When using NDEPTHS=0, use the proper evaluation
+        if (NDEPTHS == 0)
+            tes[i].eval = thread->board.turn == WHITE ? eval : -eval;
 
         // Count up the non zero evaluation terms
         for (k = 0, j = 0; j < NTERMS; j++)
