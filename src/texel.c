@@ -115,7 +115,7 @@ void runTexelTuning(Thread *thread) {
     K = computeOptimalK(tes);
 
     while (1) {
-
+        normalize(params);
 
         iteration++;
 
@@ -130,7 +130,7 @@ void runTexelTuning(Thread *thread) {
             bestError = thisError;
             printParameters(params, cparams);
             printf("\nIteration [%d] Error = %g \n", iteration, bestError);
-            normalize(params);
+
         }
 
         double gradients[NTERMS][PHASE_NB] = {{0}, {0}};
@@ -180,7 +180,7 @@ void normalize(double params[NTERMS][2]){
       sum += params[i][MG];
       sum += params[i][EG];
     }
-    printf("sum: %f\n", sum);
+    //printf("sum: %f\n", sum);
     sum /= NTERMS * 2;
     for(int i = 0; i < NTERMS; i++){
       params[i][MG] -= sum;
@@ -208,7 +208,7 @@ void initTexelEntries(TexelEntry *tes, Thread *thread) {
     thread->limits = &limits;
     thread->depth  = 0;
 
-    FILE * fin = fopen("FENS-c-filt-200-thresh-300", "r");
+    FILE * fin = fopen("FENS", "r");
 
     for (i = 0; i < NPOSITIONS; i++) {
 
